@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import pool from "../config/db.js";
+import jwt from "jsonwebtoken";
 
 export const register = async (req, res) => {
     try {
@@ -89,6 +90,119 @@ export const register = async (req, res) => {
 
     } catch (error) {
         console.error("Register error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error"
+        });
+    }
+};
+
+
+export const login = async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        // 1. Validate required fields
+        if (!email || !password) {
+            return res.status(422).json({
+                success: false,
+                message: "Email and password are required"
+            });
+        }
+
+        // 2. Find user by email
+        const [users] = await pool.execute(
+            `SELECT id, name, email, phone, password, role,
+                    is_verified, is_blocked, two_fa_enabled
+             FROM users
+             WHERE email = ?
+             LIMIT 1`,
+            [email]
+        );
+
+        if (users.length === 0) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid credentials"
+            });
+        }
+
+        const user = users[0];
+
+        // 3. Check account verification
+        if (!user.is_verified) {
+            return res.status(403).json({
+                success: false,
+                message: "Account not verified"
+            });
+        }
+
+        // 4. Check if account is blocked
+        if (user.is_blocked) {
+            return res.status(403).json({
+                success: false,
+                message: "Account suspended"
+            });
+        }
+
+        // 5. Compare password with hashed password
+        const isPasswordValid = await bcrypt.compare(
+            password,
+            user.password
+        );
+
+        if (!isPasswordValid) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid credentials"
+            });
+        }
+
+        // 6. Check 2FA
+        if (user.two_fa_enabled) {
+            return res.status(200).json({
+                success: true,
+                requires2FA: true
+            });
+        }
+
+        // 7. Generate JWT Access Token
+        const accessToken = jwt.sign(
+            {
+                id: user.id,
+                role: user.role
+            },
+            process.env.JWT_ACCESS_SECRET,
+            {
+                expiresIn: "15m"
+            }
+        );
+
+        // 8. Update last login
+        await pool.execute(
+            `UPDATE users
+             SET last_login = NOW()
+             WHERE id = ?`,
+            [user.id]
+        );
+
+        // 9. Send response
+        return res.status(200).json({
+            success: true,
+            message: "Login successful",
+            accessToken,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                role: user.role
+            }
+        });
+
+    } catch (error) {
+        console.error("Login error:", error);
 
         return res.status(500).json({
             success: false,
