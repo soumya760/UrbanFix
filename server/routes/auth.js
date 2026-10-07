@@ -1,5 +1,5 @@
 import express from "express";
-import { register , login , refreshAccessToken, verifyOTP,resendOTP} from "../controllers/authController.js";
+import { register , login , refreshAccessToken, verifyOTP,resendOTP,forgotPassword, resetPassword} from "../controllers/authController.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { roleMiddleware } from "../middleware/roleMiddleware.js";
 
@@ -10,6 +10,9 @@ router.post("/login", login);
 router.post("/refresh", refreshAccessToken);
 router.post("/resend-otp", resendOTP);
 router.post("/verify-otp", verifyOTP);
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
+
 
 router.get("/me", authMiddleware, (req, res) => {
     return res.status(200).json({

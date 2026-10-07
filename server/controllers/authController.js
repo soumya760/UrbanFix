@@ -3,7 +3,8 @@ import pool from "../config/db.js";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { generateOTP } from "../utils/otp.js";
-import { sendOTP } from "../services/emailService.js";
+import { sendOTP ,sendPasswordResetEmail
+} from "../services/emailService.js";
 
 
 
@@ -587,6 +588,154 @@ export const resendOTP = async (req, res) => {
 
     } catch (error) {
         console.error("Resend OTP error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error"
+        });
+    }
+};
+
+
+
+
+export const forgotPassword = async (req, res) => {
+    
+    try {
+        const { email } = req.body;
+        
+        
+
+        // Always use the same response to avoid revealing
+        // whether an email is registered or not.
+        const genericResponse = {
+            success: true,
+            message: "If the email exists, a reset link was sent"
+        };
+
+        if (!email) {
+            return res.status(200).json(genericResponse);
+        }
+
+        // Find user
+        const [users] = await pool.execute(
+            `SELECT id, email
+             FROM users
+             WHERE email = ?
+             LIMIT 1`,
+            [email]
+        );
+        
+
+        if (users.length === 0) {
+            return res.status(200).json(genericResponse);
+        }
+         
+        const user = users[0];
+
+        // Generate secure reset token
+        const resetToken = crypto.randomBytes(32).toString("hex");
+
+        // Store only hash in database
+        const resetTokenHash = crypto
+            .createHash("sha256")
+            .update(resetToken)
+            .digest("hex");
+
+        // Token expires in 15 minutes
+        await pool.execute(
+            `UPDATE users
+             SET reset_token_hash = ?,
+                 reset_token_expires = DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+             WHERE id = ?`,
+            [resetTokenHash, user.id]
+        );
+
+        // Create reset link
+        const resetLink =
+            `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+           
+
+        await sendPasswordResetEmail(email, resetLink);
+
+        return res.status(200).json(genericResponse);
+
+    } catch (error) {
+        console.error("Forgot password error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error"
+        });
+    }
+};
+
+
+export const resetPassword = async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+
+        // Validate input
+        if (!token || !newPassword) {
+            return res.status(422).json({
+                success: false,
+                message: "Token and new password are required"
+            });
+        }
+
+        // Hash the received token
+        const resetTokenHash = crypto
+            .createHash("sha256")
+            .update(token)
+            .digest("hex");
+
+        // Find user with valid, unexpired token
+        const [users] = await pool.execute(
+            `SELECT id
+             FROM users
+             WHERE reset_token_hash = ?
+             AND reset_token_expires > NOW()
+             LIMIT 1`,
+            [resetTokenHash]
+        );
+
+        // Invalid or expired token
+        if (users.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid or expired reset token"
+            });
+        }
+
+        const user = users[0];
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        // Update password and clear reset token
+        await pool.execute(
+            `UPDATE users
+             SET password = ?,
+                 reset_token_hash = NULL,
+                 reset_token_expires = NULL
+             WHERE id = ?`,
+            [hashedPassword, user.id]
+        );
+
+        // Revoke all refresh tokens
+        await pool.execute(
+            `DELETE FROM refresh_tokens
+             WHERE user_id = ?`,
+            [user.id]
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: "Password reset successfully"
+        });
+
+    } catch (error) {
+        console.error("Reset password error:", error);
 
         return res.status(500).json({
             success: false,
